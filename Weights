@@ -1,0 +1,1117 @@
+'A.Babaei'
+
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from scipy import stats
+from scipy.stats import t
+import statsmodels.formula.api as smf
+from statsmodels.regression.mixed_linear_model import MixedLM
+import os
+import warnings
+from datetime import datetime
+warnings.filterwarnings('ignore')
+
+# ============================================================================
+# CREATE OUTPUT FOLDER WITH TIMESTAMP
+# ============================================================================
+# Create main results folder
+base_results_path = r"G:\Master\Experiment\Statistics\Weights\Final_version_Results"
+if not os.path.exists(base_results_path):
+    os.makedirs(base_results_path)
+    print(f"✓ Created main results folder: {base_results_path}")
+
+# Create subfolders with timestamp for this run
+timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+run_folder = os.path.join(base_results_path, f"Run_{timestamp}")
+os.makedirs(run_folder)
+print(f"✓ Created run folder: {run_folder}")
+
+# Create subdirectories
+individual_plots_path = os.path.join(run_folder, "Individual_Plots")
+os.makedirs(individual_plots_path)
+
+subject_results_path = os.path.join(run_folder, "Individual_Subject_Results")
+os.makedirs(subject_results_path)
+
+lmm_results_path_sub = os.path.join(run_folder, "LMM_Results")
+os.makedirs(lmm_results_path_sub)
+
+figures_path = os.path.join(run_folder, "Figures")
+os.makedirs(figures_path)
+
+data_path = os.path.join(run_folder, "Data")
+os.makedirs(data_path)
+
+reports_path = os.path.join(run_folder, "Reports")
+os.makedirs(reports_path)
+
+print("="*70)
+print(f"ALL RESULTS WILL BE SAVED TO: {run_folder}")
+print("="*70)
+print(f"  • Individual Plots: {individual_plots_path}")
+print(f"  • Subject Results: {subject_results_path}")
+print(f"  • LMM Results: {lmm_results_path_sub}")
+print(f"  • Figures: {figures_path}")
+print(f"  • Data: {data_path}")
+print(f"  • Reports: {reports_path}")
+print("="*70)
+
+# ============================================================================
+# FUNCTION TO CALCULATE 95% CI
+# ============================================================================
+def ci95(data):
+    """Calculate 95% confidence interval for any data sequence"""
+    data = np.array(data)
+    data = data[~np.isnan(data)]
+    
+    if len(data) < 2:
+        return np.mean(data) if len(data) > 0 else np.nan, np.nan, np.nan
+    
+    m = np.mean(data)
+    se = np.std(data, ddof=1) / np.sqrt(len(data))
+    h = se * t.ppf(0.975, len(data)-1)
+    
+    return m, m-h, m+h
+
+# ============================================================================
+# LOAD DATA
+# ============================================================================
+print("\n" + "="*70)
+print("LOADING DATA...")
+print("="*70)
+
+# Set your specific paths
+data_path_original = r"G:\Master\Experiment\Statistics\Weights"
+excel_file = os.path.join(data_path_original, "Weight_Statistical_analyze_Transposed.xlsx")
+
+# Standardize column names
+df.columns = [str(col).strip().lower().replace(' ', '_') for col in df.columns]
+df = df.rename(columns={'subjects': 'subject_type'})
+
+print(f"✓ Data loaded successfully")
+print(f"  • Total subjects: {len(df)}")
+print(f"  • PD subjects: {sum(df['subject_type'] == 'PD')}")
+print(f"  • Control (CO) subjects: {sum(df['subject_type'] == 'CO')}")
+
+# Reset index to create proper subject_id
+df = df.reset_index(drop=True)
+df['original_index'] = df.index + 1
+
+# Get week columns
+week_columns = [col for col in df.columns if 'week' in col]
+
+# Melt the data to long format
+df_long = df.melt(id_vars=['subject_type', 'original_index'], 
+                  var_name='week', 
+                  value_name='weight',
+                  value_vars=week_columns)
+
+# Extract week number
+df_long['week_num'] = df_long['week'].str.extract(r'(\d+)').astype(int)
+df_long = df_long.sort_values(['subject_type', 'original_index', 'week_num'])
+
+# Create unique subject_id by group
+df_long['subject_id'] = df_long.groupby('subject_type')['original_index'].transform(lambda x: x.rank(method='dense')).astype(int)
+
+# Add experimental phase
+def assign_phase(week):
+    if week <= 4:
+        return 'Pre-stimulation'
+    elif week <= 8:
+        return 'During stimulation'
+    else:
+        return 'Post-stimulation'
+
+df_long['phase'] = df_long['week_num'].apply(assign_phase)
+
+# Calculate change from baseline
+df_long['baseline_weight'] = df_long.groupby(['subject_type', 'subject_id'])['weight'].transform('first')
+df_long['change_from_baseline'] = df_long['weight'] - df_long['baseline_weight']
+df_long['percent_change'] = (df_long['change_from_baseline'] / df_long['baseline_weight']) * 100
+
+# Calculate weight gain per phase
+phase_changes = []
+for (subject_type, subject_id), subject_df in df_long.groupby(['subject_type', 'subject_id']):
+    pre_mean = subject_df[subject_df['phase'] == 'Pre-stimulation']['weight'].mean()
+    during_mean = subject_df[subject_df['phase'] == 'During stimulation']['weight'].mean()
+    post_mean = subject_df[subject_df['phase'] == 'Post-stimulation']['weight'].mean()
+    
+    pre_to_during = during_mean - pre_mean
+    during_to_post = post_mean - during_mean
+    pre_to_post = post_mean - pre_mean
+    
+    phase_changes.append({
+        'subject_type': subject_type,
+        'subject_id': subject_id,
+        'pre_mean': pre_mean,
+        'during_mean': during_mean,
+        'post_mean': post_mean,
+        'pre_to_during_change': pre_to_during,
+        'during_to_post_change': during_to_post,
+        'pre_to_post_change': pre_to_post,
+        'pre_to_during_percent': (pre_to_during / pre_mean) * 100,
+        'during_to_post_percent': (during_to_post / during_mean) * 100,
+        'pre_to_post_percent': (pre_to_post / pre_mean) * 100
+    })
+
+df_phase_changes = pd.DataFrame(phase_changes)
+
+# ============================================================================
+# SAVE RAW DATA
+# ============================================================================
+print("\n" + "="*70)
+print("SAVING RAW DATA...")
+print("="*70)
+
+# Save original data
+original_data_path = os.path.join(data_path, "original_data.csv")
+df.to_csv(original_data_path, index=False)
+print(f"✓ Original data saved to: {original_data_path}")
+
+# Save long format data
+long_format_path = os.path.join(data_path, "long_format_data.csv")
+df_long.to_csv(long_format_path, index=False)
+print(f"✓ Long format data saved to: {long_format_path}")
+
+# Save phase changes
+phase_changes_path = os.path.join(data_path, "phase_changes.csv")
+df_phase_changes.to_csv(phase_changes_path, index=False)
+print(f"✓ Phase changes saved to: {phase_changes_path}")
+
+# ============================================================================
+# LINEAR MIXED-EFFECTS MODEL ANALYSIS
+# ============================================================================
+print("\n" + "="*70)
+print("LINEAR MIXED-EFFECTS MODEL ANALYSIS")
+print("="*70)
+
+# Create numeric group variable for LMM
+df_long['group_numeric'] = df_long['subject_type'].map({'CO': 0, 'PD': 1})
+df_long['subject_id_unique'] = df_long['subject_type'] + '_' + df_long['subject_id'].astype(str)
+
+print("\n1. MODEL COMPARISON:")
+
+# Model 1: Random intercept only
+model_intercept = MixedLM.from_formula(
+    formula="weight ~ group_numeric * week_num",
+    data=df_long,
+    groups=df_long['subject_id_unique'],
+    re_formula="1"
+)
+result_intercept = model_intercept.fit(method='lbfgs', maxiter=1000)
+
+# Model 2: Random intercept + random slope
+model_full = MixedLM.from_formula(
+    formula="weight ~ group_numeric * week_num",
+    data=df_long,
+    groups=df_long['subject_id_unique'],
+    re_formula="1 + week_num"
+)
+result_full = model_full.fit(method='lbfgs', maxiter=1000)
+
+# Likelihood ratio test
+LR_stat = -2 * (result_intercept.llf - result_full.llf)
+df_diff = result_full.df_modelwc - result_intercept.df_modelwc
+LR_p = 1 - stats.chi2.cdf(LR_stat, df_diff)
+
+print(f"\nModel Comparison Results:")
+print(f"  Random Intercept Model AIC: {result_intercept.aic:.2f}")
+print(f"  Random Slope Model AIC: {result_full.aic:.2f}")
+print(f"  Likelihood Ratio Test: χ²({df_diff}) = {LR_stat:.2f}, p = {LR_p:.4f}")
+
+# Use the better model
+result = result_full if LR_p < 0.05 else result_intercept
+print(f"\n✓ Using {'random slope' if LR_p < 0.05 else 'random intercept'} model")
+
+# Extract fixed effects
+fe_params = result.fe_params
+ci = result.conf_int(alpha=0.05)
+ci.columns = ["CI_lower", "CI_upper"]
+
+lmm_results = pd.concat([fe_params, ci], axis=1)
+lmm_results.columns = ["Estimate", "95%_CI_lower", "95%_CI_upper"]
+lmm_results["p_value"] = result.pvalues
+
+# Get predictions and residuals
+df_long['predicted'] = result.predict(df_long)
+df_long['residuals'] = df_long['weight'] - df_long['predicted']
+
+# Calculate R² values
+var_fixed = np.var(result.fittedvalues)
+var_random = np.sum(np.diag(result.cov_re)) if (hasattr(result, 'cov_re') and result.cov_re is not None) else 0
+var_residual = result.scale
+var_total = var_fixed + var_random + var_residual
+
+r2_marginal = var_fixed / var_total
+r2_conditional = (var_fixed + var_random) / var_total
+
+# Extract fixed effects for display
+expected_params = ['Intercept', 'group_numeric', 'week_num', 'group_numeric:week_num']
+readable_names = [
+    "Intercept (CO baseline)",
+    "Group (PD vs CO at baseline)",
+    "Week (slope in CO)",
+    "Group × Week (slope difference)"
+]
+
+lmm_results_fixed = pd.DataFrame()
+for param, read_name in zip(expected_params, readable_names):
+    if param in lmm_results.index:
+        lmm_results_fixed.loc[read_name, 'Estimate'] = lmm_results.loc[param, 'Estimate']
+        lmm_results_fixed.loc[read_name, '95%_CI_lower'] = lmm_results.loc[param, '95%_CI_lower']
+        lmm_results_fixed.loc[read_name, '95%_CI_upper'] = lmm_results.loc[param, '95%_CI_upper']
+        lmm_results_fixed.loc[read_name, 'p_value'] = lmm_results.loc[param, 'p_value']
+
+# Extract key parameters
+interaction_est = lmm_results.loc['group_numeric:week_num', 'Estimate']
+interaction_ci_lower = lmm_results.loc['group_numeric:week_num', '95%_CI_lower']
+interaction_ci_upper = lmm_results.loc['group_numeric:week_num', '95%_CI_upper']
+interaction_p = lmm_results.loc['group_numeric:week_num', 'p_value']
+interaction_std = interaction_est / np.sqrt(var_residual)
+
+time_est = lmm_results.loc['week_num', 'Estimate']
+time_ci_lower = lmm_results.loc['week_num', '95%_CI_lower']
+time_ci_upper = lmm_results.loc['week_num', '95%_CI_upper']
+time_p = lmm_results.loc['week_num', 'p_value']
+
+group_est = lmm_results.loc['group_numeric', 'Estimate']
+group_ci_lower = lmm_results.loc['group_numeric', '95%_CI_lower']
+group_ci_upper = lmm_results.loc['group_numeric', '95%_CI_upper']
+group_p = lmm_results.loc['group_numeric', 'p_value']
+
+# ============================================================================
+# SAVE LMM RESULTS
+# ============================================================================
+print("\n" + "="*70)
+print("SAVING LMM RESULTS...")
+print("="*70)
+
+lmm_excel_path = os.path.join(lmm_results_path_sub, "LMM_Complete_Results.xlsx")
+with pd.ExcelWriter(lmm_excel_path) as writer:
+    lmm_results.to_excel(writer, sheet_name='All_Parameters')
+    lmm_results_fixed.to_excel(writer, sheet_name='Fixed_Effects')
+    
+    variance_df = pd.DataFrame({
+        'Component': ['Fixed Effects', 'Random Effects', 'Residual', 'Total'],
+        'Variance': [var_fixed, var_random, var_residual, var_total],
+        'Percentage': [var_fixed/var_total*100, var_random/var_total*100, 
+                      var_residual/var_total*100, 100]
+    })
+    variance_df.to_excel(writer, sheet_name='Variance_Components', index=False)
+    
+    r2_df = pd.DataFrame({
+        'R² Type': ['Marginal R² (fixed effects)', 'Conditional R² (fixed + random)'],
+        'Value': [r2_marginal, r2_conditional]
+    })
+    r2_df.to_excel(writer, sheet_name='R_Squared', index=False)
+    
+    if hasattr(result, 'cov_re') and result.cov_re is not None:
+        cov_re_df = pd.DataFrame(result.cov_re)
+        cov_re_df.to_excel(writer, sheet_name='Random_Effects_Cov')
+    
+    fit_stats = pd.DataFrame({
+        'Statistic': ['AIC', 'BIC', 'Log-Likelihood', 'Scale', 'Number of observations'],
+        'Value': [result.aic, result.bic, result.llf, result.scale, result.nobs]
+    })
+    fit_stats.to_excel(writer, sheet_name='Fit_Statistics', index=False)
+
+print(f"✓ LMM results saved to: {lmm_excel_path}")
+
+# ============================================================================
+# MODEL DIAGNOSTICS
+# ============================================================================
+print("\n" + "="*70)
+print("RUNNING MODEL DIAGNOSTICS...")
+print("="*70)
+
+residuals = df_long['residuals']
+
+# Shapiro-Wilk test
+if len(residuals) > 5000:
+    residuals_sample = np.random.choice(residuals, 5000, replace=False)
+else:
+    residuals_sample = residuals
+
+shapiro_stat, shapiro_p = stats.shapiro(residuals_sample)
+
+# Levene's test
+df_long['pred_quartile'] = pd.qcut(df_long['predicted'], q=4, labels=['Q1', 'Q2', 'Q3', 'Q4'])
+groups = []
+for q in ['Q1', 'Q2', 'Q3', 'Q4']:
+    group_data = df_long[df_long['pred_quartile'] == q]['residuals'].dropna().values
+    if len(group_data) > 1:
+        groups.append(group_data)
+
+if len(groups) >= 2:
+    levene_stat, levene_p = stats.levene(*groups)
+else:
+    levene_stat, levene_p = np.nan, np.nan
+
+# Save diagnostics
+diagnostics_df = pd.DataFrame({
+    'Test': ['Shapiro-Wilk (normality)', 'Levene (homoscedasticity)'],
+    'Statistic': [shapiro_stat, levene_stat],
+    'p_value': [shapiro_p, levene_p],
+    'Interpretation': [
+        'Residuals are normal' if shapiro_p > 0.05 else 'Residuals deviate from normality',
+        'Variances are homogeneous' if levene_p > 0.05 else 'Heteroscedasticity detected'
+    ]
+})
+
+diagnostics_path = os.path.join(lmm_results_path_sub, "Diagnostics.csv")
+diagnostics_df.to_csv(diagnostics_path, index=False)
+print(f"✓ Diagnostics saved to: {diagnostics_path}")
+
+# ============================================================================
+# INDIVIDUAL SUBJECT ANALYSIS
+# ============================================================================
+print("\n" + "="*70)
+print("RUNNING INDIVIDUAL SUBJECT ANALYSIS...")
+print("="*70)
+
+individual_analyses = []
+
+for (subject_type, subject_id), subject_df in df_long.groupby(['subject_type', 'subject_id']):
+    subject_df = subject_df.sort_values('week_num')
+    
+    baseline = subject_df.iloc[0]['weight']
+    final = subject_df.iloc[-1]['weight']
+    total_change = final - baseline
+    total_percent_change = (total_change / baseline) * 100
+    
+    weekly_weights = subject_df.set_index('week_num')['weight']
+    min_weight = weekly_weights.min()
+    max_weight = weekly_weights.max()
+    mean_weight = weekly_weights.mean()
+    std_weight = weekly_weights.std()
+    
+    pre_phase = subject_df[subject_df['phase'] == 'Pre-stimulation']
+    during_phase = subject_df[subject_df['phase'] == 'During stimulation']
+    post_phase = subject_df[subject_df['phase'] == 'Post-stimulation']
+    
+    pre_mean = pre_phase['weight'].mean()
+    during_mean = during_phase['weight'].mean()
+    post_mean = post_phase['weight'].mean()
+    
+    growth_rates = []
+    for week in range(2, 13):
+        current = subject_df[subject_df['week_num'] == week]['weight'].values
+        previous = subject_df[subject_df['week_num'] == week-1]['weight'].values
+        if len(current) > 0 and len(previous) > 0:
+            growth_rates.append(current[0] - previous[0])
+    
+    avg_weekly_growth = np.mean(growth_rates) if growth_rates else 0
+    
+    weight_loss_weeks = []
+    for week in range(2, 13):
+        current = subject_df[subject_df['week_num'] == week]['weight'].values
+        previous = subject_df[subject_df['week_num'] == week-1]['weight'].values
+        if len(current) > 0 and len(previous) > 0 and current[0] < previous[0]:
+            weight_loss_weeks.append(week)
+    
+    individual_analysis = {
+        'Subject_Group': subject_type,
+        'Subject_ID': subject_id,
+        'Baseline_Weight_g': baseline,
+        'Final_Weight_g': final,
+        'Total_Weight_Change_g': total_change,
+        'Total_Percent_Change_%': total_percent_change,
+        'Mean_Weight_g': mean_weight,
+        'Min_Weight_g': min_weight,
+        'Max_Weight_g': max_weight,
+        'Weight_Range_g': max_weight - min_weight,
+        'Weight_STD_g': std_weight,
+        'Pre_Stimulation_Mean_g': pre_mean,
+        'During_Stimulation_Mean_g': during_mean,
+        'Post_Stimulation_Mean_g': post_mean,
+        'Avg_Weekly_Growth_g': avg_weekly_growth,
+        'Max_Weekly_Gain_g': np.max(growth_rates) if growth_rates else 0,
+        'Max_Weekly_Loss_g': np.min(growth_rates) if growth_rates else 0,
+        'Weight_Loss_Weeks': len(weight_loss_weeks),
+        'Weight_Loss_Week_Numbers': str(weight_loss_weeks) if weight_loss_weeks else 'None',
+        'Consistent_Growth': len(weight_loss_weeks) == 0,
+        'Final_Phase_Change_g': post_mean - during_mean,
+        'Overall_Trend': 'Increasing' if total_change > 0 else ('Decreasing' if total_change < 0 else 'Stable')
+    }
+    
+    individual_analyses.append(individual_analysis)
+
+df_individual_analyses = pd.DataFrame(individual_analyses)
+
+# Save individual analyses
+individual_path = os.path.join(subject_results_path, "Individual_Subject_Analyses.csv")
+df_individual_analyses.to_csv(individual_path, index=False)
+print(f"✓ Individual subject analyses saved to: {individual_path}")
+
+# ============================================================================
+# CREATE MAIN FIGURE
+# ============================================================================
+print("\n" + "="*70)
+print("CREATING MAIN FIGURE...")
+print("="*70)
+
+fig = plt.figure(figsize=(20, 16))
+fig.suptitle('Longitudinal Weight Monitoring Analysis\nExperimental Phases: Pre-stimulation (Weeks 1-4), During stimulation (Weeks 5-8), Post-stimulation (Weeks 9-12)', 
+             fontsize=18, fontweight='bold', y=1.02)
+
+colors = {'PD': '#E74C3C', 'CO': '#3498DB'}
+phase_colors = {'Pre-stimulation': '#95A5A6', 'During stimulation': '#2ECC71', 'Post-stimulation': '#9B59B6'}
+
+# Panel A: Individual trajectories
+ax1 = plt.subplot(3, 3, (1, 4))
+for group in ['PD', 'CO']:
+    group_data = df_long[df_long['subject_type'] == group]
+    color = colors[group]
+    
+    for subject_id in group_data['subject_id'].unique():
+        subject_df = group_data[group_data['subject_id'] == subject_id].sort_values('week_num')
+        ax1.plot(subject_df['week_num'], subject_df['weight'], 
+                color=color, alpha=0.15, linewidth=0.8, zorder=1)
+    
+    week_means = []
+    week_lower = []
+    week_upper = []
+    for week in range(1, 13):
+        week_data = group_data[group_data['week_num'] == week]['weight'].values
+        mean, lower, upper = ci95(week_data)
+        week_means.append(mean)
+        week_lower.append(lower)
+        week_upper.append(upper)
+    
+    weeks = range(1, 13)
+    ax1.plot(weeks, week_means, color=color, linewidth=3, marker='o', markersize=8,
+            label=f'{group} (n={group_data["subject_id"].nunique()})', zorder=3)
+    ax1.fill_between(weeks, week_lower, week_upper, color=color, alpha=0.2, zorder=2)
+
+for phase_start, phase_end, phase_name, phase_color in [
+    (1, 4, 'Pre-stimulation', phase_colors['Pre-stimulation']),
+    (5, 8, 'During stimulation', phase_colors['During stimulation']),
+    (9, 12, 'Post-stimulation', phase_colors['Post-stimulation'])
+]:
+    ax1.axvspan(phase_start - 0.5, phase_end + 0.5, alpha=0.1, color=phase_color)
+    ax1.text((phase_start + phase_end) / 2, ax1.get_ylim()[1] * 0.95, phase_name, 
+            ha='center', fontweight='bold', fontsize=11,
+            bbox=dict(boxstyle='round', facecolor='white', alpha=0.9))
+
+ax1.set_xlabel('Week', fontweight='bold', fontsize=12)
+ax1.set_ylabel('Body Weight (g)', fontweight='bold', fontsize=12)
+ax1.set_title('A: Individual Trajectories & Group Means with 95% CI', fontweight='bold', fontsize=14, loc='left')
+ax1.legend(loc='upper left')
+ax1.grid(True, alpha=0.3, linestyle='--')
+ax1.set_xticks(range(1, 13))
+ax1.set_xlim(0.5, 12.5)
+
+# Panel B: Phase-wise comparison
+ax2 = plt.subplot(3, 3, 2)
+phase_data = []
+for group in ['PD', 'CO']:
+    for phase in ['Pre-stimulation', 'During stimulation', 'Post-stimulation']:
+        phase_group_data = df_long[(df_long['subject_type'] == group) & (df_long['phase'] == phase)]['weight'].values
+        mean, lower, upper = ci95(phase_group_data)
+        phase_data.append({'Group': group, 'Phase': phase, 'Mean': mean, 'CI_lower': lower, 'CI_upper': upper})
+
+phase_df = pd.DataFrame(phase_data)
+x = np.arange(len(['PD', 'CO']))
+width = 0.25
+
+for i, phase in enumerate(['Pre-stimulation', 'During stimulation', 'Post-stimulation']):
+    phase_subset = phase_df[phase_df['Phase'] == phase]
+    means = []
+    ci_lowers = []
+    ci_uppers = []
+    for group in ['PD', 'CO']:
+        row = phase_subset[phase_subset['Group'] == group].iloc[0]
+        means.append(row['Mean'])
+        ci_lowers.append(row['CI_lower'])
+        ci_uppers.append(row['CI_upper'])
+    
+    yerr_lower = np.array(means) - np.array(ci_lowers)
+    yerr_upper = np.array(ci_uppers) - np.array(means)
+    yerr = np.array([yerr_lower, yerr_upper])
+    
+    offset = (i - 1) * width
+    ax2.bar(x + offset, means, width, yerr=yerr, capsize=5,
+            label=phase, color=phase_colors[phase], alpha=0.8)
+
+ax2.set_xticks(x)
+ax2.set_xticklabels(['PD', 'CO'], fontweight='bold')
+ax2.set_ylabel('Mean Weight (g)', fontweight='bold', fontsize=12)
+ax2.set_title('B: Phase-wise Mean Weights with 95% CI', fontweight='bold', fontsize=14, loc='left')
+ax2.legend()
+ax2.grid(True, alpha=0.3, axis='y', linestyle='--')
+
+# Panel C: Change from baseline
+ax3 = plt.subplot(3, 3, 3)
+for group in ['PD', 'CO']:
+    group_data = df_long[df_long['subject_type'] == group]
+    week_means = []
+    week_lower = []
+    week_upper = []
+    for week in range(1, 13):
+        week_data = group_data[group_data['week_num'] == week]['change_from_baseline'].values
+        mean, lower, upper = ci95(week_data)
+        week_means.append(mean)
+        week_lower.append(lower)
+        week_upper.append(upper)
+    
+    weeks = range(1, 13)
+    ax3.plot(weeks, week_means, color=colors[group], linewidth=2.5, marker='o', markersize=6, label=group)
+    ax3.fill_between(weeks, week_lower, week_upper, color=colors[group], alpha=0.2)
+
+ax3.axhline(y=0, color='black', linestyle='--', alpha=0.7)
+ax3.set_xlabel('Week', fontweight='bold', fontsize=12)
+ax3.set_ylabel('Change from Baseline (g)', fontweight='bold', fontsize=12)
+ax3.set_title('C: Change from Baseline with 95% CI', fontweight='bold', fontsize=14, loc='left')
+ax3.legend()
+ax3.grid(True, alpha=0.3, linestyle='--')
+ax3.set_xticks(range(1, 13))
+ax3.set_xlim(0.5, 12.5)
+
+# Panel D: Phase change comparison
+ax4 = plt.subplot(3, 3, 5)
+change_types = ['pre_to_during_change', 'during_to_post_change', 'pre_to_post_change']
+change_labels = ['Pre→During', 'During→Post', 'Pre→Post']
+
+x_pos = np.arange(len(change_labels))
+width = 0.35
+
+for i, group in enumerate(['PD', 'CO']):
+    group_changes = df_phase_changes[df_phase_changes['subject_type'] == group]
+    means = []
+    ci_lowers = []
+    ci_uppers = []
+    for ct in change_types:
+        mean, lower, upper = ci95(group_changes[ct].values)
+        means.append(mean)
+        ci_lowers.append(lower)
+        ci_uppers.append(upper)
+    
+    yerr_lower = np.array(means) - np.array(ci_lowers)
+    yerr_upper = np.array(ci_uppers) - np.array(means)
+    yerr = np.array([yerr_lower, yerr_upper])
+    
+    ax4.bar(x_pos + i*width - width/2, means, width, yerr=yerr, capsize=5,
+            color=colors[group], label=group, alpha=0.8)
+
+ax4.axhline(y=0, color='black', linestyle='-', alpha=0.5)
+ax4.set_xticks(x_pos)
+ax4.set_xticklabels(change_labels, fontweight='bold')
+ax4.set_ylabel('Weight Change (g)', fontweight='bold', fontsize=12)
+ax4.set_title('D: Weight Changes Between Phases with 95% CI', fontweight='bold', fontsize=14, loc='left')
+ax4.legend()
+ax4.grid(True, alpha=0.3, axis='y', linestyle='--')
+
+# Panel E: Final weight distribution
+ax5 = plt.subplot(3, 3, 6)
+final_weights = df_long[df_long['week_num'] == 12]
+
+pd_final_data = final_weights[final_weights['subject_type'] == 'PD']['weight'].values
+co_final_data = final_weights[final_weights['subject_type'] == 'CO']['weight'].values
+
+pd_mean, pd_lower, pd_upper = ci95(pd_final_data)
+co_mean, co_lower, co_upper = ci95(co_final_data)
+
+sns.boxplot(data=final_weights, x='subject_type', y='weight', 
+            palette=colors, ax=ax5, width=0.5, showfliers=False)
+sns.swarmplot(data=final_weights, x='subject_type', y='weight',
+             color='black', alpha=0.7, ax=ax5, size=8)
+
+ax5.errorbar(0, pd_mean, yerr=[[pd_mean-pd_lower], [pd_upper-pd_mean]], 
+             fmt='none', color='black', capsize=8, capthick=2)
+ax5.errorbar(1, co_mean, yerr=[[co_mean-co_lower], [co_upper-co_mean]], 
+             fmt='none', color='black', capsize=8, capthick=2)
+
+p_text = f'Group × Time: p = {interaction_p:.4f}'
+if interaction_p < 0.001:
+    p_text = 'Group × Time: p < 0.001'
+ax5.text(0.5, ax5.get_ylim()[1] * 0.95, p_text, ha='center', fontweight='bold',
+         bbox=dict(boxstyle='round', facecolor='white', alpha=0.9))
+
+ax5.set_xlabel('Group', fontweight='bold', fontsize=12)
+ax5.set_ylabel('Final Weight (Week 12, g)', fontweight='bold', fontsize=12)
+ax5.set_title('E: Final Weight Distribution with 95% CI', fontweight='bold', fontsize=14, loc='left')
+ax5.grid(True, alpha=0.3, axis='y', linestyle='--')
+
+# Panel F: Weekly growth rate
+ax6 = plt.subplot(3, 3, (7, 9))
+for group in ['PD', 'CO']:
+    group_data = df_long[df_long['subject_type'] == group]
+    
+    weekly_growth_data = []
+    for subject_id in group_data['subject_id'].unique():
+        subject_df = group_data[group_data['subject_id'] == subject_id].sort_values('week_num')
+        subject_growth = []
+        for week in range(2, 13):
+            current = subject_df[subject_df['week_num'] == week]['weight'].values
+            previous = subject_df[subject_df['week_num'] == week-1]['weight'].values
+            if len(current) > 0 and len(previous) > 0:
+                subject_growth.append(current[0] - previous[0])
+        if len(subject_growth) == 11:
+            weekly_growth_data.append(subject_growth)
+    
+    if weekly_growth_data:
+        weekly_growth_data = np.array(weekly_growth_data)
+        weeks = range(2, 13)
+        means = []
+        ci_lowers = []
+        ci_uppers = []
+        for week_idx in range(weekly_growth_data.shape[1]):
+            mean, lower, upper = ci95(weekly_growth_data[:, week_idx])
+            means.append(mean)
+            ci_lowers.append(lower)
+            ci_uppers.append(upper)
+        
+        ax6.plot(weeks, means, color=colors[group], linewidth=2.5, 
+                 marker='o', markersize=6, label=group)
+        ax6.fill_between(weeks, ci_lowers, ci_uppers, color=colors[group], alpha=0.2)
+
+ax6.axhline(y=0, color='black', linestyle='--', alpha=0.7)
+ax6.set_xlabel('Week', fontweight='bold', fontsize=12)
+ax6.set_ylabel('Weekly Weight Gain (g)', fontweight='bold', fontsize=12)
+ax6.set_title('F: Weekly Growth Rate with 95% CI', fontweight='bold', fontsize=14, loc='left')
+ax6.legend()
+ax6.grid(True, alpha=0.3, linestyle='--')
+ax6.set_xticks(range(2, 13))
+ax6.set_xlim(1.5, 12.5)
+
+for phase_start, phase_end, phase_color in [(2, 4, phase_colors['Pre-stimulation']),
+                                           (5, 8, phase_colors['During stimulation']),
+                                           (9, 12, phase_colors['Post-stimulation'])]:
+    ax6.axvspan(phase_start - 0.5, phase_end + 0.5, alpha=0.1, color=phase_color)
+
+plt.tight_layout()
+main_figure_path = os.path.join(figures_path, "Main_Figure.png")
+plt.savefig(main_figure_path, dpi=300, bbox_inches='tight')
+plt.close(fig)
+print(f"✓ Main figure saved to: {main_figure_path}")
+
+# ============================================================================
+# CREATE RAINCLOUD FIGURE
+# ============================================================================
+print("\n" + "="*70)
+print("CREATING RAINCLOUD FIGURE...")
+print("="*70)
+
+try:
+    import ptitprince as pt
+    has_ptitprince = True
+except ImportError:
+    has_ptitprince = False
+
+fig_rain, axes_rain = plt.subplots(2, 3, figsize=(18, 12))
+fig_rain.suptitle('Raincloud Plots: Distribution of Weight Across Phases', 
+                  fontsize=18, fontweight='bold', y=1.02)
+
+phases = ['Pre-stimulation', 'During stimulation', 'Post-stimulation']
+phase_titles = ['Pre-stimulation (Weeks 1-4)', 'During stimulation (Weeks 5-8)', 'Post-stimulation (Weeks 9-12)']
+
+# Top row: Raw weights
+for i, (phase, phase_title) in enumerate(zip(phases, phase_titles)):
+    ax = axes_rain[0, i]
+    phase_data = df_long[df_long['phase'] == phase]
+    
+    if has_ptitprince:
+        pt.RainCloud(x='subject_type', y='weight', data=phase_data,
+                    palette=[colors['PD'], colors['CO']],
+                    bw='scott', width_viol=0.7, ax=ax,
+                    pointplot=True, move=0.2, offset=0.1)
+    else:
+        bp = ax.boxplot([phase_data[phase_data['subject_type'] == 'PD']['weight'].values,
+                         phase_data[phase_data['subject_type'] == 'CO']['weight'].values],
+                        positions=[1, 2], widths=0.2, patch_artist=True,
+                        boxprops=dict(facecolor='white', alpha=0.7),
+                        medianprops=dict(color='black', linewidth=2))
+        bp['boxes'][0].set_facecolor(colors['PD'])
+        bp['boxes'][1].set_facecolor(colors['CO'])
+        
+        for j, group in enumerate(['PD', 'CO']):
+            group_data = phase_data[phase_data['subject_type'] == group]['weight'].values
+            x_jitter = np.random.normal(j+1, 0.05, size=len(group_data))
+            ax.scatter(x_jitter, group_data, alpha=0.6, color=colors[group], 
+                      s=40, edgecolor='white', linewidth=0.5)
+    
+    ax.set_xlabel('Group', fontweight='bold', fontsize=12)
+    ax.set_ylabel('Weight (g)', fontweight='bold', fontsize=12)
+    ax.set_title(f'{chr(65+i)}: {phase_title}', fontweight='bold', fontsize=14, loc='left')
+    ax.set_xticks([1, 2])
+    ax.set_xticklabels(['PD', 'CO'])
+    ax.grid(True, alpha=0.3, axis='y', linestyle='--')
+
+# Bottom row: Change from baseline
+for i, (phase, phase_title) in enumerate(zip(phases, phase_titles)):
+    ax = axes_rain[1, i]
+    
+    change_data = []
+    for group in ['PD', 'CO']:
+        group_changes = []
+        for subject_id in df_long[df_long['subject_type'] == group]['subject_id'].unique():
+            subject_data = df_long[(df_long['subject_type'] == group) & 
+                                   (df_long['subject_id'] == subject_id)]
+            baseline = subject_data[subject_data['week_num'] == 1]['weight'].values[0]
+            phase_weights = subject_data[subject_data['phase'] == phase]['weight'].values
+            if len(phase_weights) > 0:
+                change = np.mean(phase_weights) - baseline
+                group_changes.append(change)
+        change_data.append(group_changes)
+    
+    if has_ptitprince:
+        plot_df = pd.DataFrame()
+        for j, group in enumerate(['PD', 'CO']):
+            temp_df = pd.DataFrame({
+                'Group': group,
+                'Change_from_Baseline': change_data[j]
+            })
+            plot_df = pd.concat([plot_df, temp_df], ignore_index=True)
+        
+        pt.RainCloud(x='Group', y='Change_from_Baseline', data=plot_df,
+                    palette=[colors['PD'], colors['CO']],
+                    bw='scott', width_viol=0.7, ax=ax,
+                    pointplot=True, move=0.2, offset=0.1)
+    else:
+        bp = ax.boxplot(change_data, positions=[1, 2], widths=0.2, patch_artist=True,
+                        boxprops=dict(facecolor='white', alpha=0.7),
+                        medianprops=dict(color='black', linewidth=2))
+        bp['boxes'][0].set_facecolor(colors['PD'])
+        bp['boxes'][1].set_facecolor(colors['CO'])
+        
+        for j, group_data in enumerate(change_data):
+            x_jitter = np.random.normal(j+1, 0.05, size=len(group_data))
+            color = colors['PD'] if j == 0 else colors['CO']
+            ax.scatter(x_jitter, group_data, alpha=0.6, color=color, 
+                      s=40, edgecolor='white', linewidth=0.5)
+    
+    ax.axhline(y=0, color='red', linestyle='--', alpha=0.5)
+    ax.set_xlabel('Group', fontweight='bold', fontsize=12)
+    ax.set_ylabel('Change from Baseline (g)', fontweight='bold', fontsize=12)
+    ax.set_title(f'{chr(68+i)}: {phase_title} - Change from Baseline', fontweight='bold', fontsize=14, loc='left')
+    ax.set_xticks([1, 2])
+    ax.set_xticklabels(['PD', 'CO'])
+    ax.grid(True, alpha=0.3, axis='y', linestyle='--')
+
+plt.tight_layout()
+raincloud_path = os.path.join(figures_path, "Raincloud_Figure.png")
+plt.savefig(raincloud_path, dpi=300, bbox_inches='tight')
+plt.close(fig_rain)
+print(f"✓ Raincloud figure saved to: {raincloud_path}")
+
+# ============================================================================
+# CREATE DIAGNOSTICS FIGURE
+# ============================================================================
+print("\n" + "="*70)
+print("CREATING DIAGNOSTICS FIGURE...")
+print("="*70)
+
+fig_diag, axes_diag = plt.subplots(2, 2, figsize=(14, 12))
+fig_diag.suptitle('Linear Mixed Model Diagnostics', fontsize=16, fontweight='bold')
+
+# QQ plot
+stats.probplot(residuals, dist="norm", plot=axes_diag[0, 0])
+axes_diag[0, 0].set_title('A: Q-Q Plot of Residuals', fontweight='bold')
+axes_diag[0, 0].grid(True, alpha=0.3)
+
+# Residuals vs fitted
+axes_diag[0, 1].scatter(df_long['predicted'], residuals, alpha=0.5, s=20)
+axes_diag[0, 1].axhline(y=0, color='red', linestyle='--', alpha=0.7)
+axes_diag[0, 1].set_xlabel('Predicted Values', fontweight='bold')
+axes_diag[0, 1].set_ylabel('Residuals', fontweight='bold')
+axes_diag[0, 1].set_title('B: Residuals vs Fitted', fontweight='bold')
+axes_diag[0, 1].grid(True, alpha=0.3)
+
+# Residuals histogram
+axes_diag[1, 0].hist(residuals, bins=30, edgecolor='black', alpha=0.7)
+axes_diag[1, 0].set_xlabel('Residuals', fontweight='bold')
+axes_diag[1, 0].set_ylabel('Frequency', fontweight='bold')
+axes_diag[1, 0].set_title('C: Residual Distribution', fontweight='bold')
+axes_diag[1, 0].grid(True, alpha=0.3)
+
+# Random effects
+if hasattr(result, 'random_effects') and result.random_effects:
+    random_effects_df = pd.DataFrame(result.random_effects).T
+    if random_effects_df.shape[1] >= 2:
+        axes_diag[1, 1].scatter(random_effects_df.iloc[:, 0], random_effects_df.iloc[:, 1], 
+                               alpha=0.7, s=50, edgecolors='black')
+        axes_diag[1, 1].axhline(y=0, color='red', linestyle='--', alpha=0.5)
+        axes_diag[1, 1].axvline(x=0, color='red', linestyle='--', alpha=0.5)
+        axes_diag[1, 1].set_xlabel('Random Intercept', fontweight='bold')
+        axes_diag[1, 1].set_ylabel('Random Slope', fontweight='bold')
+        axes_diag[1, 1].set_title('D: Random Effects', fontweight='bold')
+        axes_diag[1, 1].grid(True, alpha=0.3)
+
+plt.tight_layout()
+diagnostics_figure_path = os.path.join(figures_path, "Diagnostics_Figure.png")
+plt.savefig(diagnostics_figure_path, dpi=300, bbox_inches='tight')
+plt.close(fig_diag)
+print(f"✓ Diagnostics figure saved to: {diagnostics_figure_path}")
+
+# ============================================================================
+# CREATE INDIVIDUAL SUBJECT PLOTS
+# ============================================================================
+print("\n" + "="*70)
+print("CREATING INDIVIDUAL SUBJECT PLOTS...")
+print("="*70)
+
+for (subject_type, subject_id), subject_df in df_long.groupby(['subject_type', 'subject_id']):
+    subject_df = subject_df.sort_values('week_num')
+    
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    fig.suptitle(f'Subject {subject_type}-{subject_id}: Weight Analysis', fontsize=16, fontweight='bold')
+    
+    baseline = subject_df.iloc[0]['weight']
+    final = subject_df.iloc[-1]['weight']
+    total_change = final - baseline
+    
+    # Plot 1: Weight trajectory
+    ax1 = axes[0, 0]
+    ax1.plot(subject_df['week_num'], subject_df['weight'], 'b-o', linewidth=2, markersize=6)
+    ax1.axhline(y=baseline, color='r', linestyle='--', alpha=0.5, label=f'Baseline: {baseline}g')
+    ax1.axhline(y=final, color='g', linestyle='--', alpha=0.5, label=f'Final: {final}g')
+    ax1.fill_between([1, 4], ax1.get_ylim()[0], ax1.get_ylim()[1], alpha=0.1, color='gray')
+    ax1.fill_between([5, 8], ax1.get_ylim()[0], ax1.get_ylim()[1], alpha=0.1, color='yellow')
+    ax1.fill_between([9, 12], ax1.get_ylim()[0], ax1.get_ylim()[1], alpha=0.1, color='orange')
+    ax1.set_xlabel('Week', fontweight='bold')
+    ax1.set_ylabel('Weight (g)', fontweight='bold')
+    ax1.set_title(f'Weight Trajectory (Change: {total_change:+.1f}g)')
+    ax1.grid(True, alpha=0.3)
+    ax1.legend()
+    ax1.set_xticks(range(1, 13))
+    
+    # Plot 2: Change from baseline
+    ax2 = axes[0, 1]
+    ax2.plot(subject_df['week_num'], subject_df['change_from_baseline'], 'g-o', linewidth=2, markersize=6)
+    ax2.axhline(y=0, color='black', linestyle='-', alpha=0.3)
+    ax2.fill_between([1, 4], ax2.get_ylim()[0], ax2.get_ylim()[1], alpha=0.1, color='gray')
+    ax2.fill_between([5, 8], ax2.get_ylim()[0], ax2.get_ylim()[1], alpha=0.1, color='yellow')
+    ax2.fill_between([9, 12], ax2.get_ylim()[0], ax2.get_ylim()[1], alpha=0.1, color='orange')
+    ax2.set_xlabel('Week', fontweight='bold')
+    ax2.set_ylabel('Change from Baseline (g)', fontweight='bold')
+    ax2.set_title('Change from Baseline')
+    ax2.grid(True, alpha=0.3)
+    ax2.set_xticks(range(1, 13))
+    
+    # Plot 3: Phase comparison
+    ax3 = axes[1, 0]
+    pre_mean = subject_df[subject_df['phase'] == 'Pre-stimulation']['weight'].mean()
+    during_mean = subject_df[subject_df['phase'] == 'During stimulation']['weight'].mean()
+    post_mean = subject_df[subject_df['phase'] == 'Post-stimulation']['weight'].mean()
+    
+    phases = ['Pre', 'During', 'Post']
+    phase_means = [pre_mean, during_mean, post_mean]
+    phase_colors = ['gray', 'yellow', 'orange']
+    
+    bars = ax3.bar(phases, phase_means, color=phase_colors, alpha=0.7)
+    ax3.set_ylabel('Mean Weight (g)', fontweight='bold')
+    ax3.set_title('Phase-wise Mean Weights')
+    ax3.grid(True, alpha=0.3, axis='y')
+    
+    for bar, value in zip(bars, phase_means):
+        height = bar.get_height()
+        ax3.text(bar.get_x() + bar.get_width()/2., height + 2, f'{value:.1f}', 
+                ha='center', va='bottom', fontweight='bold')
+    
+    # Plot 4: Weekly growth rates
+    ax4 = axes[1, 1]
+    growth_rates = []
+    for week in range(2, 13):
+        current = subject_df[subject_df['week_num'] == week]['weight'].values
+        previous = subject_df[subject_df['week_num'] == week-1]['weight'].values
+        if len(current) > 0 and len(previous) > 0:
+            growth_rates.append(current[0] - previous[0])
+    
+    weeks = list(range(2, 13))
+    colors_bar = ['red' if r < 0 else 'green' for r in growth_rates]
+    ax4.bar(weeks, growth_rates, color=colors_bar, alpha=0.7)
+    ax4.axhline(y=0, color='black', linestyle='-', alpha=0.3)
+    ax4.set_xlabel('Week', fontweight='bold')
+    ax4.set_ylabel('Weekly Growth (g)', fontweight='bold')
+    ax4.set_title('Weekly Growth Rates')
+    ax4.grid(True, alpha=0.3, axis='y')
+    ax4.set_xticks(weeks)
+    
+    plt.tight_layout()
+    subject_plot_path = os.path.join(subject_results_path, f"Subject_{subject_type}_{subject_id}.png")
+    plt.savefig(subject_plot_path, dpi=300, bbox_inches='tight')
+    plt.close(fig)
+
+print(f"✓ Created {len(df_individual_analyses)} individual subject plots")
+
+# ============================================================================
+# CREATE SUMMARY REPORTS
+# ============================================================================
+print("\n" + "="*70)
+print("CREATING SUMMARY REPORTS...")
+print("="*70)
+
+# Statistical report
+stat_report_path = os.path.join(reports_path, "Statistical_Report.txt")
+with open(stat_report_path, 'w', encoding='utf-8') as f:
+    f.write("="*80 + "\n")
+    f.write("LINEAR MIXED-EFFECTS MODEL - STATISTICAL REPORT\n")
+    f.write("="*80 + "\n\n")
+    
+    f.write("MODEL SPECIFICATION:\n")
+    f.write("-"*40 + "\n")
+    f.write("Primary model: weight ~ group × week\n")
+    f.write("Random effects: (week | subject)\n")
+    f.write("Group coding: CO = 0, PD = 1\n\n")
+    
+    f.write("MODEL COMPARISON:\n")
+    f.write("-"*40 + "\n")
+    f.write(f"Random Intercept Model AIC: {result_intercept.aic:.2f}\n")
+    f.write(f"Random Slope Model AIC: {result_full.aic:.2f}\n")
+    f.write(f"Likelihood Ratio Test: χ²({df_diff}) = {LR_stat:.2f}, p = {LR_p:.4f}\n\n")
+    
+    f.write("FIXED EFFECTS:\n")
+    f.write("-"*40 + "\n")
+    f.write(lmm_results_fixed.to_string())
+    f.write("\n\n")
+    
+    f.write("VARIANCE COMPONENTS:\n")
+    f.write("-"*40 + "\n")
+    f.write(f"Fixed effects variance: {var_fixed:.4f}\n")
+    f.write(f"Random effects variance: {var_random:.4f}\n")
+    f.write(f"Residual variance: {var_residual:.4f}\n")
+    f.write(f"Total variance: {var_total:.4f}\n\n")
+    
+    f.write("R² VALUES:\n")
+    f.write("-"*40 + "\n")
+    f.write(f"Marginal R² (fixed effects only): {r2_marginal:.4f}\n")
+    f.write(f"Conditional R² (fixed + random): {r2_conditional:.4f}\n\n")
+    
+    f.write("DIAGNOSTICS:\n")
+    f.write("-"*40 + "\n")
+    f.write(f"Shapiro-Wilk test: W = {shapiro_stat:.4f}, p = {shapiro_p:.4f}\n")
+    f.write(f"Levene's test: statistic = {levene_stat:.4f}, p = {levene_p:.4f}\n\n")
+    
+    f.write("KEY FINDINGS:\n")
+    f.write("-"*40 + "\n")
+    f.write(f"Group × Time Interaction: β = {interaction_est:.3f} g/week\n")
+    f.write(f"95% CI: [{interaction_ci_lower:.3f}, {interaction_ci_upper:.3f}]\n")
+    f.write(f"p = {interaction_p:.4f}\n")
+    f.write(f"Standardized effect size: d = {interaction_std:.3f}\n")
+
+print(f"✓ Statistical report saved to: {stat_report_path}")
+
+# Subject summary report
+subject_summary_path = os.path.join(reports_path, "Subject_Summary.txt")
+with open(subject_summary_path, 'w', encoding='utf-8') as f:
+    f.write("="*80 + "\n")
+    f.write("INDIVIDUAL SUBJECT SUMMARY\n")
+    f.write("="*80 + "\n\n")
+    
+    for group in ['PD', 'CO']:
+        f.write(f"\n{group} GROUP:\n")
+        f.write("-"*40 + "\n")
+        group_data = df_individual_analyses[df_individual_analyses['Subject_Group'] == group]
+        
+        f.write(f"Number of subjects: {len(group_data)}\n")
+        f.write(f"Baseline weight: {group_data['Baseline_Weight_g'].mean():.1f} ± {group_data['Baseline_Weight_g'].std():.1f} g\n")
+        f.write(f"Final weight: {group_data['Final_Weight_g'].mean():.1f} ± {group_data['Final_Weight_g'].std():.1f} g\n")
+        f.write(f"Total change: {group_data['Total_Weight_Change_g'].mean():.1f} ± {group_data['Total_Weight_Change_g'].std():.1f} g\n")
+        f.write(f"Percent change: {group_data['Total_Percent_Change_%'].mean():.1f} ± {group_data['Total_Percent_Change_%'].std():.1f}%\n\n")
+        
+        for _, row in group_data.iterrows():
+            f.write(f"Subject {row['Subject_Group']}-{row['Subject_ID']}:\n")
+            f.write(f"  Baseline: {row['Baseline_Weight_g']:.1f}g → Final: {row['Final_Weight_g']:.1f}g\n")
+            f.write(f"  Change: {row['Total_Weight_Change_g']:+.1f}g ({row['Total_Percent_Change_%']:+.1f}%)\n")
+            f.write(f"  Pre: {row['Pre_Stimulation_Mean_g']:.1f}g, During: {row['During_Stimulation_Mean_g']:.1f}g, Post: {row['Post_Stimulation_Mean_g']:.1f}g\n\n")
+
+print(f"✓ Subject summary saved to: {subject_summary_path}")
+
+# ============================================================================
+# CREATE README FILE
+# ============================================================================
+readme_path = os.path.join(run_folder, "README.txt")
+with open(readme_path, 'w', encoding='utf-8') as f:
+    f.write("="*80 + "\n")
+    f.write("LONGITUDINAL WEIGHT ANALYSIS - FINAL VERSION\n")
+    f.write("="*80 + "\n\n")
+    
+    f.write(f"Analysis Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+    f.write(f"Total Subjects: {len(df)} (PD: {sum(df['subject_type']=='PD')}, CO: {sum(df['subject_type']=='CO')})\n")
+    f.write(f"Time Points: 12 weeks\n\n")
+    
+    f.write("FOLDER STRUCTURE:\n")
+    f.write("-"*40 + "\n")
+    f.write(f"Run_{timestamp}/\n")
+    f.write("  ├── Data/ - Raw and processed data files\n")
+    f.write("  ├── Figures/ - Generated figures\n")
+    f.write("  ├── LMM_Results/ - Linear mixed model outputs\n")
+    f.write("  ├── Individual_Plots/ - Individual subject plots\n")
+    f.write("  ├── Individual_Subject_Results/ - Subject-level data\n")
+    f.write("  └── Reports/ - Text reports\n\n")
+    
+    f.write("KEY RESULTS:\n")
+    f.write("-"*40 + "\n")
+    f.write(f"Group × Time Interaction: p = {interaction_p:.4f}\n")
+    f.write(f"Marginal R²: {r2_marginal:.4f}\n")
+    f.write(f"Conditional R²: {r2_conditional:.4f}\n\n")
+    
+    f.write("STATISTICAL METHOD:\n")
+    f.write("-"*40 + "\n")
+    f.write("Linear Mixed-Effects Model with random intercepts and slopes\n")
+    f.write("Model: weight ~ group × week + (week | subject)\n")
+    f.write("All figures show 95% Confidence Intervals\n")
+
+print(f"✓ README saved to: {readme_path}")
+
+# ============================================================================
+# FINAL SUMMARY
+# ============================================================================
+print("\n" + "="*70)
+print("ANALYSIS COMPLETE!")
+print("="*70)
+print(f"\n✅ ALL RESULTS HAVE BEEN SAVED TO:")
+print(f"   {run_folder}")
+print("\n" + "="*70)
+print("FOLDER STRUCTURE:")
+print("="*70)
+print(f"""
+{run_folder}/
+├── Data/
+│   ├── original_data.csv
+│   ├── long_format_data.csv
+│   └── phase_changes.csv
+├── Figures/
+│   ├── Main_Figure.png (6-panel original style)
+│   ├── Raincloud_Figure.png (modern distribution plots)
+│   └── Diagnostics_Figure.png (model diagnostics)
+├── LMM_Results/
+│   └── LMM_Complete_Results.xlsx (all model outputs)
+├── Individual_Plots/
+│   ├── Individual_Trajectories.png
+│   ├── Phase_Wise_Comparison.png
+│   ├── Change_from_Baseline.png
+│   ├── Phase_Change_Comparison.png
+│   ├── Final_Weight_Distribution.png
+│   └── Weekly_Growth_Rate.png
+├── Individual_Subject_Results/
+│   ├── Individual_Subject_Analyses.csv
+│   └── Subject_*.png (18 individual plots)
+└── Reports/
+    ├── Statistical_Report.txt
+    ├── Subject_Summary.txt
+    └── README.txt
+""")
+
+print("\n" + "="*70)
+print("KEY STATISTICAL FINDINGS:")
+print("="*70)
+print(f"Group × Time Interaction:")
+print(f"  • Estimate: {interaction_est:.3f} g/week")
+print(f"  • 95% CI: [{interaction_ci_lower:.3f}, {interaction_ci_upper:.3f}]")
+print(f"  • p-value: {interaction_p:.4f}")
+print(f"  • Effect size (d): {interaction_std:.3f}")
+print(f"\nVariance Explained:")
+print(f"  • Marginal R² (fixed effects): {r2_marginal:.4f}")
+print(f"  • Conditional R² (fixed+random): {r2_conditional:.4f}")
+
+if interaction_p < 0.05:
+    print("\n✅ SIGNIFICANT GROUP × TIME INTERACTION DETECTED")
+else:
+    print("\n⚠ No significant group × time interaction")
+
+print("\n" + "="*70)
+print("END OF ANALYSIS")
+print("="*70)
