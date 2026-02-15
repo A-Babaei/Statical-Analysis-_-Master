@@ -1,0 +1,286 @@
+# Longitudinal Weight Analysis - Mixed Effects Model Pipeline
+
+[![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
+[![Statsmodels](https://img.shields.io/badge/statsmodels-0.14+-green.svg)](https://www.statsmodels.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
+A comprehensive statistical analysis pipeline for longitudinal weight monitoring data using Linear Mixed-Effects Models (LMM). This repository contains production-ready code for analyzing repeated-measures experiments with proper handling of within-subject correlations.
+
+## 📋 Table of Contents
+- [Overview](#overview)
+- [Features](#features)
+- [Installation](#installation)
+- [Quick Start](#quick-start)
+- [Input Data Format](#input-data-format)
+- [Output Structure](#output-structure)
+- [Statistical Methodology](#statistical-methodology)
+- [Figures Generated](#figures-generated)
+- [Interpretation Guide](#interpretation-guide)
+- [Citation](#citation)
+- [License](#license)
+
+## 🔬 Overview
+
+This pipeline is designed for analyzing longitudinal data from animal experiments, clinical trials, or any repeated-measures study where subjects are measured multiple times over weeks/months. It uses proper statistical methods (Linear Mixed-Effects Models) to avoid pseudoreplication and provides publication-quality visualizations.
+
+### Key Applications
+- Animal weight monitoring studies
+- Clinical trial longitudinal data
+- Neuroscience experiments with repeated measures
+- Drug efficacy studies over time
+- Growth curve analysis
+
+## ✨ Features
+
+### Statistical Excellence ✓
+- **Linear Mixed-Effects Models** with random intercepts and slopes
+- **Model comparison** (Likelihood Ratio Tests) to select optimal random effect structure
+- **Nakagawa & Schielzeth R²** (marginal and conditional) for mixed models
+- **95% Confidence Intervals** from model parameters (not bootstrapped)
+- **Effect sizes** (Cohen's d) for interactions
+- **Model diagnostics**: normality tests, homoscedasticity, Q-Q plots
+
+### Visualization Suite 📊
+- **Main Figure**: 6-panel comprehensive visualization (trajectories, phases, changes, growth rates)
+- **Raincloud Plots**: Modern distribution visualization showing full data spread
+- **Individual Subject Plots**: 2×2 grid for each subject with personalized analysis
+- **Diagnostics Plots**: Model validation and random effects visualization
+- **All plots use 95% CI** (not SEM) for publication readiness
+
+### Data Management 💾
+- **Organized output structure** with timestamped runs
+- **Complete data export** (CSV/Excel formats)
+- **Comprehensive reports** (statistical summaries, subject-level analyses)
+- **README generation** with analysis metadata
+
+## 🔧 Installation
+
+### Prerequisites
+- Python 3.8 or higher
+- pip package manager
+
+### Quick Install
+```bash
+# Clone the repository
+git clone https://github.com/yourusername/longitudinal-weight-analysis.git
+cd longitudinal-weight-analysis
+
+# Install required packages
+pip install -r requirements.txt
+```
+
+### Requirements.txt
+```txt
+pandas>=1.5.0
+numpy>=1.23.0
+matplotlib>=3.6.0
+seaborn>=0.12.0
+statsmodels>=0.14.0
+scipy>=1.10.0
+openpyxl>=3.1.0
+ptitprince>=0.2.7  # Optional, for enhanced raincloud plots
+```
+
+### Optional: Enhanced Raincloud Plots
+```bash
+pip install ptitprince  # For more beautiful raincloud visualizations
+```
+
+## 🚀 Quick Start
+
+### Basic Usage
+```python
+# Simply run the script - it will guide you through
+python longitudinal_weight_analysis.py
+
+# The script will:
+# 1. Load your data (or use example data)
+# 2. Run LMM analysis
+# 3. Generate all figures
+# 4. Save everything to organized folders
+```
+
+### Custom Data Path
+Edit the data path in the script:
+```python
+data_path = r"YOUR\PATH\TO\DATA"
+excel_file = os.path.join(data_path, "your_file.xlsx")
+```
+
+## 📁 Input Data Format
+
+### Excel Format Required
+Your Excel file should have:
+- **Subjects column**: Group labels ('PD', 'CO', 'Treatment', 'Control', etc.)
+- **Week columns**: Named 'Week-1', 'Week-2', ... 'Week-12' (flexible naming)
+
+Example structure:
+
+| Subjects | Week-1 | Week-2 | Week-3 | ... | Week-12 |
+|----------|--------|--------|--------|-----|---------|
+| PD       | 375    | 333    | 334    | ... | 322     |
+| PD       | 285    | 298    | 343    | ... | 390     |
+| CO       | 320    | 307    | 308    | ... | 441     |
+| CO       | 353    | 348    | 346    | ... | 437     |
+
+### Column Naming
+- Group column: `'Subjects'` or `'subject_type'` (case insensitive)
+- Week columns: Any column containing 'week' (e.g., 'Week-1', 'week_2', 'Week 3')
+
+## 📊 Output Structure
+
+Each run creates a timestamped folder:
+
+```
+Final_version_Results/
+└── Run_20250215_143022/
+    ├── Data/
+    │   ├── original_data.csv
+    │   ├── long_format_data.csv
+    │   └── phase_changes.csv
+    ├── Figures/
+    │   ├── Main_Figure.png
+    │   ├── Raincloud_Figure.png
+    │   └── Diagnostics_Figure.png
+    ├── LMM_Results/
+    │   └── LMM_Complete_Results.xlsx
+    ├── Individual_Plots/
+    │   ├── Individual_Trajectories.png
+    │   ├── Phase_Wise_Comparison.png
+    │   ├── Change_from_Baseline.png
+    │   ├── Phase_Change_Comparison.png
+    │   ├── Final_Weight_Distribution.png
+    │   └── Weekly_Growth_Rate.png
+    ├── Individual_Subject_Results/
+    │   ├── Individual_Subject_Analyses.csv
+    │   └── Subject_*.png (N individual plots)
+    └── Reports/
+        ├── Statistical_Report.txt
+        ├── Subject_Summary.txt
+        └── README.txt
+```
+
+## 📈 Statistical Methodology
+
+### Primary Model
+```python
+weight ~ group * week + (week | subject)
+```
+
+### Model Components
+- **Fixed Effects**: Group, Time, Group×Time interaction
+- **Random Effects**: Subject-specific intercepts and slopes
+- **Variance Structure**: Unstructured covariance for random effects
+
+### Key Statistical Outputs
+1. **Fixed Effects Estimates** with 95% CI
+2. **Random Effects Variance** components
+3. **Marginal R²**: Variance explained by fixed effects
+4. **Conditional R²**: Variance explained by fixed + random effects
+5. **Likelihood Ratio Tests** for model comparison
+6. **Standardized Effect Sizes** (Cohen's d)
+
+### Model Diagnostics
+- **Normality**: Shapiro-Wilk test on residuals
+- **Homoscedasticity**: Levene's test
+- **Influence**: Q-Q plots, residuals vs fitted
+- **Random Effects**: Distribution plots
+
+## 🎨 Figures Generated
+
+### 1. Main Figure (6 Panels)
+- **A**: Individual trajectories + group means with 95% CI
+- **B**: Phase-wise comparison with 95% CI
+- **C**: Change from baseline with 95% CI
+- **D**: Phase change comparisons
+- **E**: Final weight distribution with 95% CI
+- **F**: Weekly growth rates with 95% CI
+
+### 2. Raincloud Figure
+- **Top Row**: Raw weight distributions per phase
+- **Bottom Row**: Change from baseline per phase
+- Shows full data distribution (violin + box + points)
+
+### 3. Diagnostics Figure
+- Q-Q plot of residuals
+- Residuals vs fitted values
+- Residual histogram
+- Random effects distribution
+
+### 4. Individual Subject Plots (2×2 per subject)
+- Weight trajectory with phase backgrounds
+- Change from baseline
+- Phase-wise means
+- Weekly growth rates
+
+## 📖 Interpretation Guide
+
+### Key Questions Answered
+
+**1. Do groups differ over time?**
+- Look at Group×Time interaction p-value
+- If p < 0.05: Trajectories differ significantly
+
+**2. How much variance is explained?**
+- Marginal R²: Variance from treatment/time
+- Conditional R²: Total explained variance
+
+**3. What's the effect size?**
+- Standardized interaction (d): Small (0.2), Medium (0.5), Large (0.8)
+
+**4. Is the model appropriate?**
+- Shapiro-Wilk p > 0.05: Residuals normal
+- Levene's p > 0.05: Homogeneous variances
+
+### Example Results Section
+```markdown
+"We analyzed weight trajectories using linear mixed-effects models with 
+subject-specific random intercepts and slopes. We found a significant 
+group × time interaction (β = 2.3 g/week, 95% CI [1.1, 3.5], p = 0.002, 
+d = 0.45), indicating differential weight gain between PD and control groups. 
+The model explained 78% of the variance (conditional R² = 0.78), with 
+fixed effects accounting for 52% (marginal R² = 0.52)."
+```
+
+## 📝 Citation
+
+If you use this pipeline in your research, please cite:
+
+```bibtex
+@software{weight_analysis_2025,
+  author = {Your Name},
+  title = {Longitudinal Weight Analysis Pipeline},
+  year = {2025},
+  publisher = {GitHub},
+  url = {https://github.com/yourusername/longitudinal-weight-analysis}
+}
+```
+
+## 📄 License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+## 🤝 Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.
+
+1. Fork the repository
+2. Create your feature branch (`git checkout -b feature/AmazingFeature`)
+3. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
+4. Push to the branch (`git push origin feature/AmazingFeature`)
+5. Open a Pull Request
+
+## 📧 Contact
+
+A.Babaei 
+Project Link: [https://github.com/yourusername/longitudinal-weight-analysis](https://github.com/yourusername/longitudinal-weight-analysis)
+
+## 🙏 Acknowledgments
+
+- Statsmodels team for excellent mixed models implementation
+- Seaborn and Matplotlib for visualization capabilities
+- All contributors and users of this pipeline
+
+---
+
+**Made with ❤️ for reproducible science**
