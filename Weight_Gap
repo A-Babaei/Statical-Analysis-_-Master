@@ -1,0 +1,323 @@
+# ============================================================================
+# COMPLETE STATISTICAL ANALYSIS SCRIPT
+# Parafascicular Thalamus Study - Weight Analysis
+# ============================================================================
+
+import pandas as pd
+import numpy as np
+from statsmodels.regression.mixed_linear_model import MixedLM
+from statsmodels.stats.multitest import multipletests
+from scipy import stats
+import matplotlib.pyplot as plt
+import seaborn as sns
+import os
+from itertools import combinations
+
+# ============================================================================
+# CONFIGURATION
+# ============================================================================
+
+# File paths - UPDATE THESE TO YOUR ACTUAL PATHS
+data_file = r"G:\Master\Experiment\Statistics\Weights\Weight_Long_Format_Data.xlsx"
+output_base = r"G:\Master\Experiment\Statistics\Weights\Results"
+
+# Create output directories
+output_dirs = {
+    'figures': os.path.join(output_base, 'Figures'),
+    'tables': os.path.join(output_base, 'Tables'),
+    'stats': os.path.join(output_base, 'Statistics')
+}
+
+for dir_path in output_dirs.values():
+    os.makedirs(dir_path, exist_ok=True)
+
+print("="*80)
+print("WEIGHT ANALYSIS - COMPLETE PIPELINE")
+print("="*80)
+
+# ============================================================================
+# STEP 1: LOAD AND PREPARE DATA
+# ============================================================================
+
+print("\n[1/6] Loading data...")
+df_long = pd.read_excel(data_file)
+
+print(f"  ✓ Loaded {len(df_long)} observations")
+print(f"  ✓ Columns: {list(df_long.columns)}")
+
+# Map your column names to expected names
+df_long = df_long.rename(columns={
+    'subject_type': 'Group',
+    'subject_id_unique': 'Rat_ID',
+    'phase': 'Phase',
+    'weight': 'Weight'
+})
+
+print(f"  ✓ Groups: {df_long['Group'].unique()}")
+print(f"  ✓ Phases: {df_long['Phase'].unique()}")
+print(f"  ✓ Subjects: {df_long['Rat_ID'].nunique()}")
+
+# Ensure correct data types
+df_long['Rat_ID'] = df_long['Rat_ID'].astype(str)
+df_long['Group'] = df_long['Group'].astype('category')
+df_long['Phase'] = df_long['Phase'].astype('category')
+
+# ============================================================================
+# STEP 2: FIT LINEAR MIXED MODEL
+# ============================================================================
+
+print("\n[2/6] Fitting Linear Mixed Model...")
+
+# Fit LMM with REML
+model = MixedLM.from_formula(
+    'Weight ~ Group * Phase',
+    data=df_long,
+    groups=df_long['Rat_ID'],
+    re_formula='1'
+)
+
+result = model.fit(reml=True, method='lbfgs')
+
+print("\n" + "="*80)
+print("LINEAR MIXED MODEL RESULTS")
+print("="*80)
+print(result.summary())
+
+# Save full results
+with open(os.path.join(output_dirs['stats'], 'LMM_Full_Results.txt'), 'w') as f:
+    f.write(str(result.summary()))
+
+# ============================================================================
+# STEP 3: CALCULATE R² — Nakagawa & Schielzeth (2013) Method
+# ============================================================================
+
+print("\n[3/6] Calculating R² values (Nakagawa & Schielzeth method)...")
+
+# Fixed effects prediction (manually, to isolate sigma²_fixed)
+X = model.exog                          # Design matrix (fixed effects)
+beta = result.fe_params.values          # Fixed effect coefficients
+y_pred_fixed_vals = X @ beta            # Matrix multiply: Xβ
+
+# Variance of fixed effects
+var_fixed = np.var(y_pred_fixed_vals, ddof=1)
+
+# Random intercept variance (between-subject)
+var_random = float(result.cov_re.iloc[0, 0])
+
+# Residual variance
+var_residual = float(result.scale)
+
+# Total variance
+var_total = var_fixed + var_random + var_residual
+
+# Marginal R² (fixed effects only)
+r2_marginal = var_fixed / var_total
+
+# Conditional R² (fixed + random effects)
+r2_conditional = (var_fixed + var_random) / var_total
+
+print(f"\n  Variance (fixed effects):        {var_fixed:.4f}")
+print(f"  Variance (random intercept):     {var_random:.4f}")
+print(f"  Variance (residual):             {var_residual:.4f}")
+print(f"  Variance (total):                {var_total:.4f}")
+print(f"\n  R² Marginal  (fixed only):       {r2_marginal:.4f}")
+print(f"  R² Conditional (fixed + random): {r2_conditional:.4f}")
+
+# ============================================================================
+# STEP 4: POST-HOC PAIRWISE PHASE COMPARISONS (TUKEY-STYLE)
+# ============================================================================
+
+print("\n[4/6] Running post-hoc pairwise phase comparisons...")
+
+phases = sorted(df_long['Phase'].unique())
+phase_pairs = list(combinations(phases, 2))
+
+posthoc_results = []
+
+for phase1, phase2 in phase_pairs:
+    # Subset data
+    df_pair = df_long[df_long['Phase'].isin([phase1, phase2])].copy()
+    
+    # Reorder categories so phase1 is reference
+    df_pair['Phase'] = pd.Categorical(df_pair['Phase'], categories=[phase1, phase2])
+    
+    # Fit reduced model
+    model_pair = MixedLM.from_formula(
+        'Weight ~ Phase',
+        data=df_pair,
+        groups=df_pair['Rat_ID'],
+        re_formula='1'
+    )
+    result_pair = model_pair.fit(reml=True, method='lbfgs')
+    
+    # Extract coefficient and p-value
+    coef = result_pair.params.get(f'Phase[T.{phase2}]', np.nan)
+    pval = result_pair.pvalues.get(f'Phase[T.{phase2}]', np.nan)
+    se = result_pair.bse.get(f'Phase[T.{phase2}]', np.nan)
+    
+    posthoc_results.append({
+        'Comparison': f'{phase1} vs {phase2}',
+        'Estimate': coef,
+        'SE': se,
+        'p_value': pval
+    })
+
+df_posthoc = pd.DataFrame(posthoc_results)
+
+# Apply FDR correction
+if len(df_posthoc) > 0:
+    _, df_posthoc['p_adj_FDR'], _, _ = multipletests(
+        df_posthoc['p_value'], 
+        method='fdr_bh'
+    )
+
+print("\n" + "="*80)
+print("POST-HOC PAIRWISE PHASE COMPARISONS")
+print("="*80)
+print(df_posthoc.to_string(index=False))
+
+df_posthoc.to_csv(os.path.join(output_dirs['tables'], 'PostHoc_Phase_Comparisons.csv'), index=False)
+
+# ============================================================================
+# STEP 5: BETWEEN-GROUP COMPARISONS WITHIN EACH PHASE
+# ============================================================================
+
+print("\n[5/6] Running between-group comparisons within each phase...")
+
+group_phase_results = []
+
+for phase in phases:
+    df_phase = df_long[df_long['Phase'] == phase].copy()
+    
+    # Fit model for this phase
+    model_phase = MixedLM.from_formula(
+        'Weight ~ Group',
+        data=df_phase,
+        groups=df_phase['Rat_ID'],
+        re_formula='1'
+    )
+    result_phase = model_phase.fit(reml=True, method='lbfgs')
+    
+    # Extract results
+    groups = sorted(df_phase['Group'].unique())
+    if len(groups) == 2:
+        group2 = groups[1]
+        coef = result_phase.params.get(f'Group[T.{group2}]', np.nan)
+        pval = result_phase.pvalues.get(f'Group[T.{group2}]', np.nan)
+        se = result_phase.bse.get(f'Group[T.{group2}]', np.nan)
+        
+        # Calculate Cohen's d
+        mean1 = df_phase[df_phase['Group'] == groups[0]]['Weight'].mean()
+        mean2 = df_phase[df_phase['Group'] == group2]['Weight'].mean()
+        pooled_sd = df_phase.groupby('Group', observed=True)['Weight'].std().mean()
+        cohens_d = (mean2 - mean1) / pooled_sd if pooled_sd > 0 else np.nan
+        
+        group_phase_results.append({
+            'Phase': phase,
+            'Comparison': f'{groups[0]} vs {group2}',
+            'Estimate': coef,
+            'SE': se,
+            'Cohen_d': cohens_d,
+            'p_value': pval
+        })
+
+df_group_phase = pd.DataFrame(group_phase_results)
+
+# Apply FDR correction
+if len(df_group_phase) > 0:
+    _, df_group_phase['p_adj_FDR'], _, _ = multipletests(
+        df_group_phase['p_value'], 
+        method='fdr_bh'
+    )
+
+print("\n" + "="*80)
+print("BETWEEN-GROUP COMPARISONS WITHIN EACH PHASE")
+print("="*80)
+print(df_group_phase.to_string(index=False))
+
+df_group_phase.to_csv(os.path.join(output_dirs['tables'], 'Group_Comparisons_By_Phase.csv'), index=False)
+
+# ============================================================================
+# STEP 6: CALCULATE ICC
+# ============================================================================
+
+print("\n[6/6] Calculating Intraclass Correlation Coefficient (ICC)...")
+
+# ICC already calculated from variance components
+icc = var_random / (var_random + var_residual)
+
+print(f"\n  Random intercept variance: {var_random:.4f}")
+print(f"  Residual variance:         {var_residual:.4f}")
+print(f"  ICC:                       {icc:.4f}")
+
+# Save summary statistics
+summary_stats = {
+    'Var_Fixed': var_fixed,
+    'Var_Random': var_random,
+    'Var_Residual': var_residual,
+    'Var_Total': var_total,
+    'R2_Marginal': r2_marginal,
+    'R2_Conditional': r2_conditional,
+    'ICC': icc
+}
+
+pd.DataFrame([summary_stats]).to_csv(
+    os.path.join(output_dirs['stats'], 'Model_Summary_Statistics.csv'), 
+    index=False
+)
+
+# ============================================================================
+# VISUALIZATION
+# ============================================================================
+
+print("\nGenerating visualizations...")
+
+# Set style
+sns.set_style("whitegrid")
+plt.rcParams['figure.dpi'] = 300
+
+# 1. Weight trajectory by group
+fig, ax = plt.subplots(figsize=(10, 6))
+for group in sorted(df_long['Group'].unique()):
+    df_group = df_long[df_long['Group'] == group]
+    means = df_group.groupby('Phase', observed=True)['Weight'].mean()
+    sems = df_group.groupby('Phase', observed=True)['Weight'].sem()
+    
+    ax.errorbar(range(len(means)), means, yerr=sems, 
+                marker='o', capsize=5, label=group, linewidth=2)
+
+ax.set_xticks(range(len(phases)))
+ax.set_xticklabels(phases, rotation=45)
+ax.set_xlabel('Phase', fontsize=12)
+ax.set_ylabel('Weight (g)', fontsize=12)
+ax.set_title('Weight Trajectory by Group', fontsize=14, fontweight='bold')
+ax.legend()
+plt.tight_layout()
+plt.savefig(os.path.join(output_dirs['figures'], 'Weight_Trajectory.png'))
+plt.close()
+
+# 2. Box plot by phase and group
+fig, ax = plt.subplots(figsize=(12, 6))
+sns.boxplot(data=df_long, x='Phase', y='Weight', hue='Group', ax=ax)
+ax.set_xlabel('Phase', fontsize=12)
+ax.set_ylabel('Weight (g)', fontsize=12)
+ax.set_title('Weight Distribution by Phase and Group', fontsize=14, fontweight='bold')
+plt.xticks(rotation=45)
+plt.tight_layout()
+plt.savefig(os.path.join(output_dirs['figures'], 'Weight_Boxplot.png'))
+plt.close()
+
+print("\n" + "="*80)
+print("ANALYSIS COMPLETE")
+print("="*80)
+print(f"\nResults saved to: {output_base}")
+print(f"  - Figures: {output_dirs['figures']}")
+print(f"  - Tables: {output_dirs['tables']}")
+print(f"  - Statistics: {output_dirs['stats']}")
+print("\n" + "="*80)
+print("KEY FINDINGS")
+print("="*80)
+print(f"  R² Marginal:     {r2_marginal:.4f} (fixed effects explain {r2_marginal*100:.1f}% of variance)")
+print(f"  R² Conditional:  {r2_conditional:.4f} (fixed + random explain {r2_conditional*100:.1f}% of variance)")
+print(f"  ICC:             {icc:.4f} ({icc*100:.1f}% of variance is between-subject)")
+print("="*80)
