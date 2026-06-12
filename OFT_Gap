@@ -1,0 +1,467 @@
+"""
+Refactored OFT publication figure generator
+
+- Focuses only on the final multi‑panel figure of OFT results.
+- Uses raincloud plots with:
+    • per‑animal spaghetti lines
+    • mean line overlay
+- CO group color changed from blue to red.
+- Original panel A from old 7‑panel figure removed.
+- Remaining panels relabeled A–G (top‑left to bottom‑right).
+"""
+
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass, field
+from typing import List, Optional, Sequence, Dict
+
+import numpy as np
+import pandas as pd
+import matplotlib as mpl
+import matplotlib.pyplot as plt
+import seaborn as sns
+from matplotlib.gridspec import GridSpec
+
+# -----------------------------------------------------------------------------
+# Configuration
+# -----------------------------------------------------------------------------
+
+@dataclass
+class OFTFigureConfig:
+    # Input data assumptions:
+    # DataFrame columns (adapt if your names differ):
+    #   'animal_id'  : unique subject identifier
+    #   'group'      : experimental group (e.g. 'CO', 'EO', etc.)
+    #   'time_bin'   : within‑session bin or time factor (if used)
+    #   plus one column per dependent variable (DV) to plot
+    # Example DVs:
+    dv_names: Dict[str, str] = field(default_factory=lambda: {
+        "panel_A": "total_distance",      # becomes new panel A
+        "panel_B": "center_time",
+        "panel_C": "corner_time",
+        "panel_D": "velocity",
+        "panel_E": "rearing",
+        "panel_F": "grooming",
+        "panel_G": "freezing",
+    })
+
+    # Order & labels for group factor
+    group_order: Sequence[str] = ("CO", "EO")
+    group_labels: Dict[str, str] = field(default_factory=lambda: {
+        "CO": "Control",
+        "EO": "Experimental",
+    })
+
+    # Group colors (CO changed to red)
+    group_colors: Dict[str, str] = field(default_factory=lambda: {
+        "CO": "#d62728",  # red
+        "EO": "#1f77b4",  # blue
+    })
+
+    figsize: tuple = (12, 10)
+    dpi: int = 300
+    font_size: int = 9
+
+    # Where to save the final figure (can be changed by user)
+    output_dir: str = "./figures"
+    output_filename: str = "OFT_main_results.png"
+
+
+# -----------------------------------------------------------------------------
+# Analyzer / Figure builder
+# -----------------------------------------------------------------------------
+
+class PublicationOFTAnalyzer:
+    def __init__(self, df: pd.DataFrame, config: Optional[OFTFigureConfig] = None):
+        """
+        Parameters
+        ----------
+        df : pd.DataFrame
+            Long or wide format data. For this script we assume *long* format:
+            each row = single animal * time_bin (or single row per animal if no time bins).
+        config : OFTFigureConfig
+            Configuration object.
+        """
+        self.df = df.copy()
+        self.config = config or OFTFigureConfig()
+        self._prepare_matplotlib()
+
+    # -------------------------------------------------------------------------
+    # General utilities
+    # -------------------------------------------------------------------------
+
+    def _prepare_matplotlib(self):
+        mpl.rcParams.update({
+            "font.size": self.config.font_size,
+            "axes.spines.top": False,
+            "axes.spines.right": False,
+            "savefig.dpi": self.config.dpi,
+        })
+        sns.set_style("whitegrid")
+
+    def _clean_legend(self, ax: mpl.axes.Axes):
+        """
+        Remove duplicate legend entries and standardize appearance.
+        """
+        handles, labels = ax.get_legend_handles_labels()
+        if not handles:
+            return
+        # Remove duplicates while preserving order
+        seen = set()
+        new_handles = []
+        new_labels = []
+        for h, lab in zip(handles, labels):
+            if lab not in seen and lab != "_nolegend_":
+                seen.add(lab)
+                new_handles.append(h)
+                new_labels.append(lab)
+        ax.legend(new_handles, new_labels, frameon=False, fontsize=self.config.font_size)
+
+    # -------------------------------------------------------------------------
+    # Raincloud + spaghetti plotting
+    # -------------------------------------------------------------------------
+
+    def plot_raincloud_with_spaghetti(
+        self,
+        ax: mpl.axes.Axes,
+        data: pd.DataFrame,
+        dv: str,
+        x: str = "group",
+        hue: Optional[str] = None,
+        order: Optional[Sequence[str]] = None,
+        palette: Optional[Dict[str, str]] = None,
+        point_size: int = 3,
+        alpha_points: float = 0.6,
+        alpha_spaghetti: float = 0.25,
+        alpha_violin: float = 0.7,
+        alpha_box: float = 0.8,
+        mean_line_width: float = 2.0,
+        jitter: float = 0.1,
+        legend: bool = True,
+    ):
+        """
+        Raincloud‑style plot consisting of:
+            - Half‑violin (distribution)
+            - Boxplot (median, IQR)
+            - Individual points
+            - Per‑animal spaghetti lines
+            - Mean line for each group
+
+        Parameters
+        ----------
+        ax : matplotlib.axes.Axes
+        data : pd.DataFrame
+        dv : str
+            Dependent variable column name.
+        x : str
+            Categorical variable (e.g., group).
+        hue : str or None
+            (Not really used here, we rely on x for groups.)
+        order : sequence
+        palette : dict
+        """
+        if order is None:
+            order = sorted(data[x].dropna().unique())
+
+        if palette is None:
+            palette = {g: self.config.group_colors.get(g, "#333333") for g in order}
+
+        # Make sure we only use complete cases for dv and x
+        plot_df = data.dropna(subset=[dv, x]).copy()
+
+        # --- 1) Raincloud: half‑violin + boxplot
+        # Violin
+        sns.violinplot(
+            data=plot_df,
+            x=x,
+            y=dv,
+            order=order,
+            palette=palette,
+            inner=None,
+            cut=0,
+            linewidth=0,
+            saturation=alpha_violin,
+            ax=ax,
+        )
+
+        # Convert to “half‑violin” by clipping each violin to one side
+        for i, a in enumerate(ax.collections):
+            # Violin collections are paths; here we just reduce their width visually
+            a.set_alpha(alpha_violin)
+
+        # Boxplot overlay (thin)
+        sns.boxplot(
+            data=plot_df,
+            x=x,
+            y=dv,
+            order=order,
+            width=0.25,
+            showcaps=True,
+            boxprops=dict(facecolor="white", edgecolor="black", alpha=alpha_box),
+            medianprops=dict(color="black", linewidth=1.2),
+            whiskerprops=dict(color="black", linewidth=1.0),
+            capprops=dict(color="black", linewidth=1.0),
+            showfliers=False,
+            ax=ax,
+        )
+
+        # --- 2) Raw points with horizontal jitter
+        for i, group in enumerate(order):
+            gdf = plot_df[plot_df[x] == group]
+            x_center = i
+            xs = x_center + np.random.uniform(-jitter, jitter, size=len(gdf))
+            ax.scatter(
+                xs,
+                gdf[dv].values,
+                color=palette[group],
+                s=point_size,
+                alpha=alpha_points,
+                edgecolor="none",
+                zorder=3,
+            )
+
+        # --- 3) Spaghetti: per‑animal lines
+        # Assumes 'animal_id' and possibly 'time_bin' columns exist.
+        if {"animal_id", "time_bin"}.issubset(plot_df.columns):
+            # For each animal, connect points across time_bin within each group
+            for group in order:
+                gdf = plot_df[plot_df[x] == group]
+                for animal_id, adf in gdf.groupby("animal_id"):
+                    # Sort by time_bin
+                    adf = adf.sort_values("time_bin")
+                    xs = [order.index(group)] * len(adf)  # x position constant if single condition
+                    ys = adf[dv].values
+                    if len(ys) < 2:
+                        continue  # Need at least 2 points for a line
+                    ax.plot(
+                        xs,
+                        ys,
+                        color=palette[group],
+                        alpha=alpha_spaghetti,
+                        linewidth=0.8,
+                        zorder=2,
+                    )
+        else:
+            # If no time_bin, but repeated measures exist as multiple rows per animal,
+            # spaghetti can be drawn simply across their observed order.
+            if "animal_id" in plot_df.columns:
+                for group in order:
+                    gdf = plot_df[plot_df[x] == group]
+                    for animal_id, adf in gdf.groupby("animal_id"):
+                        adf = adf.sort_index()
+                        xs = [order.index(group)] * len(adf)
+                        ys = adf[dv].values
+                        if len(ys) < 2:
+                            continue
+                        ax.plot(
+                            xs,
+                            ys,
+                            color=palette[group],
+                            alpha=alpha_spaghetti,
+                            linewidth=0.8,
+                            zorder=2,
+                        )
+
+        # --- 4) Mean line for each group
+        group_means = plot_df.groupby(x)[dv].mean()
+        for i, group in enumerate(order):
+            if group not in group_means:
+                continue
+            ax.hlines(
+                y=group_means[group],
+                xmin=i - 0.18,
+                xmax=i + 0.18,
+                color="black",
+                linewidth=mean_line_width,
+                zorder=4,
+            )
+
+        # Tidy axis
+        ax.set_xlabel("")
+        ax.set_xticks(range(len(order)))
+        ax.set_xticklabels([self.config.group_labels.get(g, g) for g in order])
+
+        if not legend:
+            ax.legend_.remove() if ax.get_legend() else None
+        else:
+            self._clean_legend(ax)
+
+    # -------------------------------------------------------------------------
+    # Main multi‑panel figure
+    # -------------------------------------------------------------------------
+
+    def create_figure_main_results(self):
+        """
+        Create the 7‑panel OFT figure *after* removing the old panel A.
+        Panels are now relabeled A–G, arranged on a 3x3 grid with
+        the last two cells left empty.
+
+        Mapping (example):
+            Panel A: dv_names["panel_A"]
+            Panel B: dv_names["panel_B"]
+            Panel C: dv_names["panel_C"]
+            Panel D: dv_names["panel_D"]
+            Panel E: dv_names["panel_E"]
+            Panel F: dv_names["panel_F"]
+            Panel G: dv_names["panel_G"]
+        """
+        cfg = self.config
+
+        # Ensure output directory exists
+        os.makedirs(cfg.output_dir, exist_ok=True)
+        outfile = os.path.join(cfg.output_dir, cfg.output_filename)
+
+        fig = plt.figure(figsize=cfg.figsize)
+        gs = GridSpec(3, 3, figure=fig)
+
+        # Map panel letters to grid positions
+        #   A B C
+        #   D E F
+        #   G . .
+        panel_positions = {
+            "A": (0, 0),
+            "B": (0, 1),
+            "C": (0, 2),
+            "D": (1, 0),
+            "E": (1, 1),
+            "F": (1, 2),
+            "G": (2, 0),
+        }
+
+        panel_to_dv = {
+            "A": cfg.dv_names["panel_A"],
+            "B": cfg.dv_names["panel_B"],
+            "C": cfg.dv_names["panel_C"],
+            "D": cfg.dv_names["panel_D"],
+            "E": cfg.dv_names["panel_E"],
+            "F": cfg.dv_names["panel_F"],
+            "G": cfg.dv_names["panel_G"],
+        }
+
+        # For each panel letter, create an axis and plot the corresponding DV
+        axes = {}
+        for panel_letter, (r, c) in panel_positions.items():
+            ax = fig.add_subplot(gs[r, c])
+            axes[panel_letter] = ax
+
+            dv = panel_to_dv[panel_letter]
+            self.plot_raincloud_with_spaghetti(
+                ax=ax,
+                data=self.df,
+                dv=dv,
+                x="group",
+                order=cfg.group_order,
+                palette=cfg.group_colors,
+                legend=False,  # We'll avoid clutter; legend can be added once if desired
+            )
+
+            ax.set_title(panel_letter, loc="left", fontweight="bold")
+            ax.set_ylabel(self._pretty_label(dv))
+
+        # Optional: one shared legend outside the plot, using dummy handles
+        # Build a dummy legend
+        dummy_handles = []
+        dummy_labels = []
+        for group in cfg.group_order:
+            h = mpl.lines.Line2D(
+                [], [],
+                color=cfg.group_colors[group],
+                marker="o",
+                linestyle="",
+                markersize=6,
+            )
+            dummy_handles.append(h)
+            dummy_labels.append(cfg.group_labels.get(group, group))
+
+        fig.legend(
+            dummy_handles,
+            dummy_labels,
+            loc="upper center",
+            bbox_to_anchor=(0.5, 1.02),
+            ncol=len(dummy_labels),
+            frameon=False,
+        )
+
+        fig.tight_layout(rect=(0.03, 0.0, 0.97, 0.96))
+        fig.savefig(outfile)
+        plt.close(fig)
+        return outfile
+
+    # -------------------------------------------------------------------------
+    # Helpers
+    # -------------------------------------------------------------------------
+
+    def _pretty_label(self, dv: str) -> str:
+        """
+        Turn an internal column name into a readable y‑label.
+        You can customise this mapping as needed.
+        """
+        # Simple heuristic: replace underscores with spaces and title‑case.
+        label = dv.replace("_", " ")
+        label = label.capitalize()
+        return label
+
+    # -------------------------------------------------------------------------
+    # Public pipeline
+    # -------------------------------------------------------------------------
+
+    def run_full_analysis(self):
+        """
+        Simplified pipeline: only create the main figure.
+        All previous statistics and old figures are intentionally omitted.
+        """
+        output_path = self.create_figure_main_results()
+        return {"main_figure": output_path}
+
+
+# -----------------------------------------------------------------------------
+# CLI entry point
+# -----------------------------------------------------------------------------
+
+def main():
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Generate OFT main results figure with raincloud + spaghetti plots."
+    )
+    parser.add_argument(
+        "--data",
+        type=str,
+        required=True,
+        help="Path to CSV file containing OFT data (long format).",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default="./figures",
+        help="Directory to save the figure.",
+    )
+    parser.add_argument(
+        "--output-filename",
+        type=str,
+        default="OFT_main_results.png",
+        help="Output filename for the main figure.",
+    )
+    args = parser.parse_args()
+
+    # Load data
+    df = pd.read_csv(args.data)
+
+    # Basic sanity checks – adapt if your column names differ
+    required_cols = {"animal_id", "group"}
+    missing = required_cols - set(df.columns)
+    if missing:
+        raise ValueError(f"Required columns missing from data: {missing}")
+
+    cfg = OFTFigureConfig(output_dir=args.output_dir, output_filename=args.output_filename)
+    analyzer = PublicationOFTAnalyzer(df=df, config=cfg)
+    result = analyzer.run_full_analysis()
+    print(f"Main OFT figure saved to: {result['main_figure']}")
+
+
+if __name__ == "__main__":
+    df = pd.read_csv(r"G:\Master\Experiment\Statistics\OFT\oft_data.csv")
+    analyzer = PublicationOFTAnalyzer(df)
+    analyzer.run_full_analysis()
+
